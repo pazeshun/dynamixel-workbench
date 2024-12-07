@@ -382,7 +382,7 @@ bool DynamixelGeneralHw::initRosInterface(void)
   actr_cmd_pos_.resize(actr_names_.size(), 0);
   actr_cmd_vel_.resize(actr_names_.size(), 0);
   actr_cmd_eff_.resize(actr_names_.size(), 0);
-  for (int i = 0; i < dynamixel_.size(); i++)
+  for (int i = 0; i < actr_names_.size(); i++)
   {
     hardware_interface::ActuatorStateHandle state_handle(actr_names_[i], &actr_curr_pos_[i], &actr_curr_vel_[i], &actr_curr_eff_[i]);
     actr_state_interface_.registerHandle(state_handle);
@@ -448,6 +448,7 @@ bool DynamixelGeneralHw::initRosInterface(void)
   }
 
   // Load transmissions composed of target actuators
+  jnt_names_.clear();
   for (const transmission_interface::TransmissionInfo& info : infos)
   {
     if (std::find(actr_names_.begin(), actr_names_.end(), info.actuators_[0].name_) != actr_names_.end())
@@ -466,12 +467,60 @@ bool DynamixelGeneralHw::initRosInterface(void)
         ROS_ERROR_STREAM("Error loading transmission: " << info.name_);
         return false;
       }
-      else
+      ROS_INFO_STREAM("Loaded transmission: " << info.name_);
+      for (const transmission_interface::JointInfo& joint : info.joints_)
       {
-        ROS_INFO_STREAM("Loaded transmission: " << info.name_);
+        jnt_names_.push_back(joint.name_);
       }
     }
   }
+
+  // Register joint interfaces for enforcing joint limits
+  urdf::Model urdf_model;
+  if (!urdf_model.initString(urdf_string))
+  {
+    ROS_ERROR("Error parsing URDF");
+    return false;
+  }
+  jnt_curr_pos_.resize(jnt_names_.size(), 0);
+  jnt_curr_vel_.resize(jnt_names_.size(), 0);
+  jnt_curr_eff_.resize(jnt_names_.size(), 0);
+  jnt_cmd_pos_.resize(jnt_names_.size(), 0);
+  jnt_cmd_vel_.resize(jnt_names_.size(), 0);
+  jnt_cmd_eff_.resize(jnt_names_.size(), 0);
+  for (int i = 0; i < jnt_names_.size(); i++)
+  {
+    hardware_interface::JointStateHandle state_handle(jnt_names_[i], &jnt_curr_pos_[i], &jnt_curr_vel_[i], &jnt_curr_eff_[i]);
+    //jnt_state_interface_.registerHandle(state_handle);
+
+    hardware_interface::JointHandle position_handle(state_handle, &jnt_cmd_pos_[i]);
+    //pos_jnt_interface_.registerHandle(position_handle);
+    hardware_interface::JointHandle velocity_handle(state_handle, &jnt_cmd_vel_[i]);
+    //vel_jnt_interface_.registerHandle(velocity_handle);
+    hardware_interface::JointHandle effort_handle(state_handle, &jnt_cmd_eff_[i]);
+    //eff_jnt_interface_.registerHandle(effort_handle);
+
+    joint_limits_interface::JointLimits limits;
+    joint_limits_interface::SoftJointLimits soft_limits;
+    getJointLimits(urdf_model.getJoint(jnt_names_[i]), limits);
+    getSoftJointLimits(urdf_model.getJoint(jnt_names_[i]), soft_limits);
+    getJointLimits(jnt_names_[i], nh_, limits);
+    getSoftJointLimits(jnt_names_[i], nh_, soft_limits);
+
+    joint_limits_interface::PositionJointSoftLimitsHandle pos_lim_handle(position_handle, limits, soft_limits);
+    pos_jnt_lim_interface_.registerHandle(pos_lim_handle);
+    joint_limits_interface::VelocityJointSoftLimitsHandle vel_lim_handle(velocity_handle, limits, soft_limits);
+    vel_jnt_lim_interface_.registerHandle(vel_lim_handle);
+    joint_limits_interface::EffortJointSoftLimitsHandle eff_lim_handle(effort_handle, limits, soft_limits);
+    eff_jnt_lim_interface_.registerHandle(eff_lim_handle);
+  }
+  //registerInterface(&jnt_state_interface_);
+  //registerInterface(&pos_jnt_interface_);
+  //registerInterface(&vel_jnt_interface_);
+  //registerInterface(&eff_jnt_interface_);
+  registerInterface(&pos_jnt_lim_interface_);
+  registerInterface(&vel_jnt_lim_interface_);
+  registerInterface(&eff_jnt_lim_interface_);
 
   // Initialize E-stop interface
   servo_sub_ = pnh_.subscribe("servo", 1, &DynamixelGeneralHw::servoCallback, this);
@@ -773,7 +822,7 @@ void DynamixelGeneralHw::read(void)
   is_hold_pos_ = is_hold_pos_raw_;
 }
 
-void DynamixelGeneralHw::write(void)
+void DynamixelGeneralHw::write(const ros::Time& time, const ros::Duration& period)
 {
   std::lock_guard<std::mutex> lock(mtx_);
 
@@ -792,6 +841,9 @@ void DynamixelGeneralHw::write(void)
     {
       if (robot_transmissions_.get<transmission_interface::JointToActuatorPositionInterface>())
       {
+        // Enforce joint position limits
+        pos_jnt_lim_interface_.enforceLimits(period);
+
         // Propagate joint position commands to actuators
         robot_transmissions_.get<transmission_interface::JointToActuatorPositionInterface>()->propagate();
 
@@ -834,6 +886,9 @@ void DynamixelGeneralHw::write(void)
       }
       if (robot_transmissions_.get<transmission_interface::JointToActuatorVelocityInterface>())
       {
+        // Enforce joint velocity limits
+        vel_jnt_lim_interface_.enforceLimits(period);
+
         // Propagate joint velocity commands to actuators
         robot_transmissions_.get<transmission_interface::JointToActuatorVelocityInterface>()->propagate();
 
@@ -913,6 +968,9 @@ void DynamixelGeneralHw::write(void)
       if (is_calc_effort_ && is_current_ctrl_ &&
           robot_transmissions_.get<transmission_interface::JointToActuatorEffortInterface>())
       {
+        // Enforce joint effort limits
+        eff_jnt_lim_interface_.enforceLimits(period);
+
         // Propagate joint effort commands to actuators
         robot_transmissions_.get<transmission_interface::JointToActuatorEffortInterface>()->propagate();
 

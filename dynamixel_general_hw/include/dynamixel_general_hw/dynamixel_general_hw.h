@@ -12,10 +12,15 @@
 // ROS base
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
+#include <urdf/model.h>
 
 // ros_control
 #include <hardware_interface/robot_hw.h>
 #include <transmission_interface/transmission_interface_loader.h>
+#include <joint_limits_interface/joint_limits.h>
+#include <joint_limits_interface/joint_limits_urdf.h>
+#include <joint_limits_interface/joint_limits_rosparam.h>
+#include <joint_limits_interface/joint_limits_interface.h>
 
 // ROS msg and srv
 #include <dynamixel_workbench_msgs/DynamixelCommand.h>
@@ -58,11 +63,29 @@ protected:
   transmission_interface::RobotTransmissions robot_transmissions_;
   std::unique_ptr<transmission_interface::TransmissionInterfaceLoader> transmission_loader_;
 
+  // Joint interface for enforcing joint limits
+  hardware_interface::JointStateInterface jnt_state_interface_;
+  hardware_interface::PositionJointInterface pos_jnt_interface_;
+  hardware_interface::VelocityJointInterface vel_jnt_interface_;
+  hardware_interface::EffortJointInterface eff_jnt_interface_;
+  joint_limits_interface::PositionJointSoftLimitsInterface pos_jnt_lim_interface_;
+  joint_limits_interface::VelocityJointSoftLimitsInterface vel_jnt_lim_interface_;
+  joint_limits_interface::EffortJointSoftLimitsInterface eff_jnt_lim_interface_;
+
   // Actuator interface to transmission loader
   hardware_interface::ActuatorStateInterface actr_state_interface_;
   hardware_interface::PositionActuatorInterface pos_actr_interface_;
   hardware_interface::VelocityActuatorInterface vel_actr_interface_;
   hardware_interface::EffortActuatorInterface eff_actr_interface_;
+
+  // Joint raw data
+  std::vector<std::string> jnt_names_;
+  std::vector<double> jnt_curr_pos_;
+  std::vector<double> jnt_curr_vel_;
+  std::vector<double> jnt_curr_eff_;
+  std::vector<double> jnt_cmd_pos_;
+  std::vector<double> jnt_cmd_vel_;
+  std::vector<double> jnt_cmd_eff_;
 
   // Actuator raw data
   std::vector<std::string> actr_names_;
@@ -117,7 +140,7 @@ public:
 
   void readDynamixelState(void);
   void read(void);
-  void write(void);
+  void write(const ros::Time& time, const ros::Duration& period);
 
   bool isJntCmdIgnored(void);
 
